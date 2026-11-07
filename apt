@@ -3,7 +3,7 @@
 # Provides the commands of modern apt (list --upgradable, search, show, ...) and readable output.
 # It only calls the system tools: nothing of the package system is replaced.
 
-VERSION=0.1
+VERSION=0.2
 APT_GET=${APT_GET:-apt-get}
 APT_CACHE=${APT_CACHE:-apt-cache}
 DPKG_QUERY=${DPKG_QUERY:-dpkg-query}
@@ -21,6 +21,7 @@ Usage: apt COMMAND [ARGS]
   update                      refresh the package lists
   list [--upgradable|--installed] [PATTERN]
                               list packages (default: upgradable)
+  tui                         text-mode package manager (needs the dialog package)
   upgrade                     install the available upgrades (asks first)
   full-upgrade                the same, may install or remove packages (dist-upgrade)
   install PKG...              install packages
@@ -56,6 +57,10 @@ simulate() {
 list_upgradable() {
     pattern=$1
     out=$(simulate dist-upgrade)
+    if [ -n "$RAW" ]; then   # machine readable: "name old new" per line, only upgrades
+        [ -z "$out" ] || echo "$out" | awk '$1 == "U" { print $2, $3, $4 }'
+        return 0
+    fi
     if [ -z "$out" ]; then
         echo "All packages are up to date."
         return 0
@@ -80,13 +85,15 @@ cmd=${1:-}
 case $cmd in
     ""|-h|--help|help) usage ;;
     --version|-v|version) echo "apt-n900 $VERSION (front end for $("$APT_GET" --version | head -1))" ;;
+    tui) exec apt-tui "$@" ;;
     update) as_root "$APT_GET" update "$@" ;;
     list)
-        mode=upgradable; pattern=
+        mode=upgradable; pattern=; RAW=
         for a in "$@"; do
             case $a in
                 --upgradable|-u) mode=upgradable ;;
                 --installed|-i) mode=installed ;;
+                --raw) RAW=1 ;;
                 -*) echo "apt: unknown option $a" >&2; exit 2 ;;
                 *) pattern=$a ;;
             esac

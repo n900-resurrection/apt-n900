@@ -1,0 +1,128 @@
+#!/bin/sh
+# apt-tui: a text-mode package manager for Maemo 5 built on dialog and the apt command (apt-n900).
+# Menu: upgrade (check list), search and install, installed packages (remove), update the lists.
+# Everything that changes the system is shown as a simulation first and needs a confirmation.
+
+DIALOG=${DIALOG:-dialog}
+APT=${APT:-apt}
+APT_GET=${APT_GET:-apt-get}
+APT_CACHE=${APT_CACHE:-apt-cache}
+DPKG_QUERY=${DPKG_QUERY:-dpkg-query}
+NO_COLOR=1; export NO_COLOR   # the apt front end prints plain text for us
+
+command -v "$DIALOG" >/dev/null 2>&1 || { echo "apt-tui needs dialog (package dialog)" >&2; exit 1; }
+TMP=$(mktemp -d /tmp/apt-tui.XXXXXX) || exit 1
+trap 'rm -rf "$TMP"' EXIT INT TERM
+BT="apt-n900"
+
+as_root() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
+
+# Box size from the terminal (80x24 with the keyboard open on the N900), at most 100 columns.
+size() {
+    set -- $(stty size 2>/dev/null)
+    H=${1:-24}; W=${2:-80}
+    BH=$((H - 4)); BW=$((W - 4)); [ "$BW" -gt 100 ] && BW=100
+    LH=$((BH - 8))
+}
+
+msg() { size; $DIALOG --backtitle "$BT" --title "$1" --msgbox "$2" 9 $((BW > 60 ? 60 : BW)); }
+
+# run_logged TITLE COMMAND...: run as root, show the output live, then report the exit status.
+run_logged() {
+    title=$1; shift
+    size
+    rm -f "$TMP/rc"
+    ( DEBIAN_FRONTEND=noninteractive as_root "$@" 2>&1; echo $? > "$TMP/rc" ) |
+        $DIALOG --backtitle "$BT" --title "$title" --programbox "Working, please wait..." "$BH" "$BW"
+    rc=$(cat "$TMP/rc" 2>/dev/null)
+    if [ "$rc" = 0 ]; then msg "$title" "Done."; else msg "$title" "Failed (exit status ${rc:-?}). Run the same command by hand to see the details."; fi
+}
+
+# confirm_install PKG...: show what apt would do, ask, then install.
+confirm_install() {
+    "$APT_GET" -s install "$@" > "$TMP/sim" 2>&1
+    if ! grep -q '^Inst\|^Remv\|upgraded,' "$TMP/sim"; then msg "Install" "$(tail -3 "$TMP/sim")"; return; fi
+    summary=$(grep -E '^(Inst|Remv)|upgraded,' "$TMP/sim" | sed 's/ (.*//' | head -30)
+    size
+    $DIALOG --backtitle "$BT" --title "Confirm" --yesno "$summary" "$BH" "$BW" || return
+    run_logged "Installing" "$APT_GET" -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install "$@"
+}
+
+confirm_remove() {
+    "$APT_GET" -s remove "$1" > "$TMP/sim" 2>&1
+    summary=$(grep -E '^Remv|to remove' "$TMP/sim" | sed 's/ (.*//' | head -30)
+    size
+    $DIALOG --backtitle "$BT" --title "Remove $1" --yesno "$summary" "$BH" "$BW" || return
+    run_logged "Removing" "$APT_GET" -y remove "$1"
+}
+
+# package_page PKG: description, then offer install or remove.
+package_page() {
+    "$APT_CACHE" show "$1" 2>/dev/null | awk 'BEGIN { RS = "" } NR == 1' > "$TMP/info"
+    [ -s "$TMP/info" ] || { msg "$1" "No information."; return; }
+    size
+    $DIALOG --backtitle "$BT" --title "$1" --textbox "$TMP/info" "$BH" "$BW"
+    if "$DPKG_QUERY" -W -f '${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; then
+        $DIALOG --backtitle "$BT" --title "$1" --defaultno --yesno "$1 is installed. Remove it?" 7 50 && confirm_remove "$1"
+    else
+        $DIALOG --backtitle "$BT" --title "$1" --yesno "Install $1?" 7 50 && confirm_install "$1"
+    fi
+}
+
+upgrades() {
+    "$APT" list --upgradable --raw > "$TMP/up" 2>/dev/null
+    if [ ! -s "$TMP/up" ]; then msg "Upgrade" "All packages are up to date.\n\nUse 'Update lists' to refresh the repositories."; return; fi
+    set --
+    while read -r n o v; do set -- "$@" "$n" "$o -> $v" on; done < "$TMP/up"
+    size
+    sel=$($DIALOG --stdout --separate-output --backtitle "$BT" --title "Upgrade" \
+        --checklist "Space selects, Enter continues. $(( $# / 3 )) upgradable." "$BH" "$BW" "$LH" "$@") || return
+    [ -n "$sel" ] || return
+    # shellcheck disable=SC2086
+    confirm_install $(echo "$sel" | tr '\n' ' ')
+}
+
+pick_package() {   # reads "name - description" lines from $TMP/list, shows a menu, opens the page
+    [ -s "$TMP/list" ] || { msg "$1" "Nothing found."; return; }
+    set --
+    n=0
+    while IFS= read -r line; do
+        set -- "$@" "$line"
+        n=$((n + 1)); [ $n -ge 300 ] && break
+    done < "$TMP/list"
+    size
+    pick=$($DIALOG --stdout --backtitle "$BT" --title "$1" --no-items --menu "$n packages (at most 300 are shown). Enter opens a package." "$BH" "$BW" "$LH" "$@") || return
+    package_page "${pick%% *}"
+}
+
+search() {
+    size
+    q=$($DIALOG --stdout --backtitle "$BT" --title "Search" --inputbox "Words in the name or description:" 8 60) || return
+    [ -n "$q" ] || return
+    # shellcheck disable=SC2086
+    "$APT_CACHE" search $q > "$TMP/list" 2>/dev/null
+    pick_package "Search: $q"
+}
+
+installed() {
+    size
+    q=$($DIALOG --stdout --backtitle "$BT" --title "Installed" --inputbox "Part of the name (empty = all):" 8 60) || return
+    "$DPKG_QUERY" -W -f '${Package} - ${Version} ${Status}\n' 2>/dev/null | awk -v q="$q" '$NF == "installed" && index($1, q) { print $1 " - " $3 }' > "$TMP/list"
+    pick_package "Installed"
+}
+
+while :; do
+    size
+    c=$($DIALOG --stdout --backtitle "$BT" --title "Packages" --cancel-label "Quit" \
+        --menu "Maemo 5 package manager" 14 50 5 \
+        1 "Upgrade" 2 "Search and install" 3 "Installed packages" 4 "Update lists" 5 "Quit") || break
+    case $c in
+        1) upgrades ;;
+        2) search ;;
+        3) installed ;;
+        4) run_logged "Updating lists" "$APT_GET" update ;;
+        5) break ;;
+    esac
+done
+clear 2>/dev/null
+exit 0
