@@ -2,4 +2,5 @@
 override APP     := apt-n900
 VERSION ?= 0.2
 RUN_CMD := apt --help
+REV     ?= 1maemo2
 include ../../mk/app.mk

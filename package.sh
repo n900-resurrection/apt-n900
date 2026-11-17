@@ -20,4 +20,6 @@ DEPENDS="apt, dpkg, sudo, dialog"
 DISPLAY_NAME="apt-n900"
 SHORT_DESC="Friendly apt command (list --upgradable, search, show) over apt-get"
 LONG_DESC="Adds /usr/bin/apt with the commands of modern apt: apt update, apt list --upgradable, apt upgrade, apt install, apt search, apt show, apt files, apt owns, and apt tui (apt-tui: a dialog based menu to upgrade, search, install and remove). It only calls apt-get, apt-cache and dpkg-query: nothing of the system package manager is replaced."
+# man pages (shown by the package mandoc)
+debpack_man "$HERE/apt.1"
 debpack_build

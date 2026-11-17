@@ -1,0 +1,102 @@
+.TH APT 1 "2026-11-17" "apt-n900 0.2" "User Commands"
+.SH NAME
+apt, apt\-tui \- friendly front end of apt-get for the Nokia N900
+.SH SYNOPSIS
+.B apt
+.I command
+.RI [ arguments ]
+.br
+.B apt tui
+.SH DESCRIPTION
+.B apt
+adds the commands of the modern
+.BR apt (8)
+to Maemo 5, whose apt is version 0.7. It only calls
+.BR apt\-get (8),
+.BR apt\-cache (8)
+and
+.BR dpkg\-query (1):
+nothing of the system package manager is replaced.
+.PP
+Commands that change the system run through
+.BR sudo (8)
+when you are not root. Other options are passed to
+.BR apt\-get :
+for example
+.B apt install \-y
+.I package
+or
+.B apt upgrade \-s
+(only simulate).
+.SH COMMANDS
+.TP
+.B update
+Refresh the package lists.
+.TP
+.BR list " [" \-\-upgradable | \-\-installed "] [" \fIpattern\fR ]
+List packages; with no option, the packages that can be upgraded.
+.TP
+.B tui
+Text-mode package manager built on
+.BR dialog (1):
+upgrade, search, install and remove from a menu. Also installed as
+.BR apt\-tui .
+.TP
+.B upgrade
+Install the available upgrades; asks first.
+.TP
+.B full\-upgrade
+The same, but may install or remove packages (apt-get dist-upgrade).
+.TP
+.BI install " package" ...
+Install packages.
+.TP
+.BI remove " package" ...
+Remove packages and keep their configuration files.
+.TP
+.BI purge " package" ...
+Remove packages and their configuration files.
+.TP
+.B autoremove
+Remove packages that are no longer needed.
+.TP
+.B clean
+Delete the downloaded
+.B .deb
+files.
+.TP
+.BI search " words"
+Search package names and descriptions.
+.TP
+.BI show " package"
+Show the details of a package.
+.TP
+.RB "policy [" \fIpackage\fR ]
+Show the available versions and the repositories they come from.
+.TP
+.BI files " package"
+List the files of an installed package.
+.TP
+.BI owns " file"
+Find the installed package that owns
+.IR file .
+.TP
+.BR \-h ", " \-\-help
+Print a short help.
+.TP
+.B \-\-version
+Print the version.
+.SH FILES
+.TP
+.I /etc/apt/sources.list, /etc/apt/sources.list.d/
+the sources that
+.B apt update
+reads.
+.SH SEE ALSO
+.BR apt\-get (8),
+.BR apt\-cache (8),
+.BR dpkg (1),
+.BR dialog (1),
+.BR n900 (7)
+.SH AUTHOR
+elPytel. Project: https://github.com/n900-resurrection/apt-n900
