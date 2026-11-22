@@ -11,6 +11,13 @@ contains owns "busybox" apt owns /bin/busybox
 ok simulate-needs-no-root sh -c 'apt install -s busybox >/dev/null'
 t unknown-command-exit 2 sh -c 'apt frobnicate >/dev/null 2>&1; echo $?'
 ok raw-list sh -c 'apt list --upgradable --raw >/dev/null'
+cat > /tmp/fake-apt-get-err <<'EOT'
+#!/bin/sh
+echo "E: Error, pkgProblemResolver::Resolve generated breaks" >&2
+exit 100
+EOT
+chmod +x /tmp/fake-apt-get-err
+contains error-not-uptodate "could not be made" sh -c 'APT_GET=/tmp/fake-apt-get-err apt list --upgradable 2>&1'
 ok tui-installed sh -c 'command -v apt-tui'
 # the dialog interface: a fake apt-get offers two upgrades; the menu is driven through screen (hardcopy of the virtual terminal)
 if command -v screen >/dev/null 2>&1; then

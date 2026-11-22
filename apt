@@ -49,14 +49,23 @@ as_root() {
 # Print "name old -> new" for the packages in a simulated run. Lines of apt-get -s look like
 #   Inst name [old] (new Repo:Name [armel])   (upgrade)      Inst name (new Repo [armel])   (new package)
 simulate() {
-    "$APT_GET" -s "$@" 2>/dev/null | sed -n \
+    "$APT_GET" -s "$@" 2>"${SIMERR:-/dev/null}" | sed -n \
         -e 's/^Inst \([^ ]*\) \[\([^]]*\)\] (\([^ ]*\) .*$/U \1 \2 \3/p' \
         -e 's/^Inst \([^ ]*\) (\([^ ]*\) .*$/N \1 - \2/p'
 }
 
 list_upgradable() {
     pattern=$1
-    out=$(simulate dist-upgrade)
+    # "upgrade", the same as what "apt upgrade" installs: dist-upgrade fails on Maemo (the resolver wants to replace upstart/busybox)
+    SIMERR=$(mktemp) || SIMERR=/dev/null
+    out=$(simulate upgrade)
+    if [ -z "$out" ] && grep -q '^E:' "$SIMERR" 2>/dev/null; then   # an error is not "up to date"
+        echo "The list of upgrades could not be made:" >&2
+        grep -v '^\(Reading\|Building\)' "$SIMERR" >&2
+        rm -f "$SIMERR"
+        return 1
+    fi
+    rm -f "$SIMERR"
     if [ -n "$RAW" ]; then   # machine readable: "name old new" per line, only upgrades
         [ -z "$out" ] || echo "$out" | awk '$1 == "U" { print $2, $3, $4 }'
         return 0
