@@ -6,7 +6,7 @@ PROJ=/project
 . "$PROJ/scripts/debpack.sh"
 
 PKG=apt-n900
-VERSION="${VERSION:-0.2}"
+VERSION="${VERSION:-0.3}"
 STAGE="$PROJ/build/deb/stage-$PKG"
 HERE="$PROJ/apps/apt-n900"
 

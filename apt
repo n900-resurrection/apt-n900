@@ -3,7 +3,7 @@
 # Provides the commands of modern apt (list --upgradable, search, show, ...) and readable output.
 # It only calls the system tools: nothing of the package system is replaced.
 
-VERSION=0.2
+VERSION=0.3
 APT_GET=${APT_GET:-apt-get}
 APT_CACHE=${APT_CACHE:-apt-cache}
 DPKG_QUERY=${DPKG_QUERY:-dpkg-query}

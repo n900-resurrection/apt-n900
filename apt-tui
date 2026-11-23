@@ -1,7 +1,9 @@
 #!/bin/sh
 # apt-tui: a text-mode package manager for Maemo 5 built on dialog and the apt command (apt-n900).
-# Menu: upgrade (check list), search and install, installed packages (remove), update the lists.
+# Menu: update the lists, upgrade (check list), search and install, installed packages (info only), remove packages.
 # Everything that changes the system is shown as a simulation first and needs a confirmation.
+# Packages that cannot be verified (a repository without a signature, most of the repositories of Maemo) are named in that confirmation;
+# they are installed only when you agree to it explicitly (apt-get --allow-unauthenticated for exactly this installation, nothing is changed in the settings).
 
 DIALOG=${DIALOG:-dialog}
 APT=${APT:-apt}
@@ -27,50 +29,97 @@ size() {
 
 msg() { size; $DIALOG --backtitle "$BT" --title "$1" --msgbox "$2" 9 $((BW > 60 ? 60 : BW)); }
 
-# run_logged TITLE COMMAND...: run as root, show the output live, then report the exit status.
+# run_logged TITLE COMMAND...: run as root, show the output live (it is also kept in $TMP/log), then report a failure.
+# The exit status of the command is in $rc and is also returned; with QUIET=1 a failure is not reported (the caller decides what to do).
 run_logged() {
     title=$1; shift
+    # Ask for the sudo password on the plain terminal, not inside the dialog box.
+    if [ "$(id -u)" != 0 ]; then
+        clear 2>/dev/null
+        sudo -v || { msg "$title" "sudo authentication failed."; rc=1; return 1; }
+    fi
     size
     rm -f "$TMP/rc"
-    ( DEBIAN_FRONTEND=noninteractive as_root "$@" 2>&1; echo $? > "$TMP/rc" ) |
+    ( as_root env DEBIAN_FRONTEND=noninteractive "$@" 2>&1; echo $? > "$TMP/rc" ) | tee "$TMP/log" |
         $DIALOG --backtitle "$BT" --title "$title" --programbox "Working, please wait..." "$BH" "$BW"
     rc=$(cat "$TMP/rc" 2>/dev/null)
-    if [ "$rc" = 0 ]; then msg "$title" "Done."; else msg "$title" "Failed (exit status ${rc:-?}). Run the same command by hand to see the details."; fi
+    # The programbox already stays open with the output until OK is pressed, so report only failures.
+    [ "$rc" = 0 ] || [ -n "$QUIET" ] || msg "$title" "Failed (exit status ${rc:-?}). Run the same command by hand to see the details."
+    [ "$rc" = 0 ]
 }
 
-# confirm_install PKG...: show what apt would do, ask, then install.
+# unsigned_names FILE: the packages that apt lists under "WARNING: The following packages cannot be authenticated!"
+unsigned_names() {
+    awk '/cannot be authenticated/ { on = 1; next }
+         on && /^[ \t]/ { for (i = 1; i <= NF; i++) print $i; next }
+         on { exit }' "$1" | tr '\n' ' ' | sed 's/ $//'
+}
+
+# unsigned_ok PKGS: ask whether to install packages that cannot be verified (the default answer is No).
+unsigned_ok() {
+    size
+    $DIALOG --backtitle "$BT" --title "Not signed" --defaultno --yesno "WARNING: apt cannot verify these packages:\n\n$1\n\nTheir repository has no signature, so nobody guarantees that they are the files of the author. Install them only from a source you trust.\n\nInstall anyway?" "$BH" "$BW"
+}
+
+# confirm_install PKG...: show what apt would do, ask, then install. Unsigned packages need an extra, explicit consent.
 confirm_install() {
     "$APT_GET" -s install "$@" > "$TMP/sim" 2>&1
     if ! grep -q '^Inst\|^Remv\|upgraded,' "$TMP/sim"; then msg "Install" "$(tail -3 "$TMP/sim")"; return; fi
     summary=$(grep -E '^(Inst|Remv)|upgraded,' "$TMP/sim" | sed 's/ (.*//' | head -30)
+    flag=
+    unsigned=$(unsigned_names "$TMP/sim")
     size
-    $DIALOG --backtitle "$BT" --title "Confirm" --yesno "$summary" "$BH" "$BW" || return
-    run_logged "Installing" "$APT_GET" -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install "$@"
+    if [ -n "$unsigned" ]; then
+        $DIALOG --backtitle "$BT" --title "Confirm (not signed)" --defaultno --yesno "$summary\n\nWARNING, cannot be verified: $unsigned" "$BH" "$BW" || return
+        unsigned_ok "$unsigned" || return
+        flag=--allow-unauthenticated
+    else
+        $DIALOG --backtitle "$BT" --title "Confirm" --yesno "$summary" "$BH" "$BW" || return
+    fi
+    QUIET=1 run_logged "Installing" "$APT_GET" -y $flag -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install "$@" && return
+    # The simulation did not mention it, but apt refused because of a signature: ask now, then once more with the flag.
+    if [ -z "$flag" ] && grep -qE 'cannot be authenticated|without --force-yes|allow-unauthenticated' "$TMP/log" 2>/dev/null; then
+        unsigned_ok "$(unsigned_names "$TMP/log" | grep . || echo "$*")" || return
+        run_logged "Installing" "$APT_GET" -y --allow-unauthenticated -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install "$@"
+    else
+        msg "Installing" "Failed (exit status ${rc:-?}). Run the same command by hand to see the details."
+    fi
 }
 
 confirm_remove() {
     "$APT_GET" -s remove "$1" > "$TMP/sim" 2>&1
-    summary=$(grep -E '^Remv|to remove' "$TMP/sim" | sed 's/ (.*//' | head -30)
+    if ! grep -q '^Remv' "$TMP/sim"; then msg "Remove $1" "Cannot be removed:\n\n$(tail -5 "$TMP/sim")"; return; fi
+    summary=$(grep -E '^Remv' "$TMP/sim" | sed 's/ (.*//' | head -30)
     size
-    $DIALOG --backtitle "$BT" --title "Remove $1" --yesno "$summary" "$BH" "$BW" || return
+    $DIALOG --backtitle "$BT" --title "Remove $1" --defaultno --yesno "$summary" "$BH" "$BW" || return
     run_logged "Removing" "$APT_GET" -y remove "$1"
 }
 
-# package_page PKG: description, then offer install or remove.
-package_page() {
+# show_info PKG: package description. Returns 1 if there is none.
+show_info() {
     "$APT_CACHE" show "$1" 2>/dev/null | awk 'BEGIN { RS = "" } NR == 1' > "$TMP/info"
-    [ -s "$TMP/info" ] || { msg "$1" "No information."; return; }
+    [ -s "$TMP/info" ] || { msg "$1" "No information."; return 1; }
     size
     $DIALOG --backtitle "$BT" --title "$1" --textbox "$TMP/info" "$BH" "$BW"
-    if "$DPKG_QUERY" -W -f '${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; then
-        $DIALOG --backtitle "$BT" --title "$1" --defaultno --yesno "$1 is installed. Remove it?" 7 50 && confirm_remove "$1"
-    else
+}
+
+# install_page PKG: description, then offer installation (nothing more if already installed).
+install_page() {
+    show_info "$1" || return
+    if ! "$DPKG_QUERY" -W -f '${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; then
         $DIALOG --backtitle "$BT" --title "$1" --yesno "Install $1?" 7 50 && confirm_install "$1"
     fi
 }
 
 upgrades() {
-    "$APT" list --upgradable --raw > "$TMP/up" 2>/dev/null
+    # apt-n900 has "--raw" (name old new); standard apt needs its normal output parsed.
+    if ! "$APT" list --upgradable --raw > "$TMP/up" 2>/dev/null; then
+        LC_ALL=C "$APT" list --upgradable 2>/dev/null | awk '
+            index($1, "/") && $NF ~ /\]$/ {
+                split($1, a, "/"); old = $NF; sub(/\]$/, "", old)
+                print a[1], old, $2
+            }' > "$TMP/up"
+    fi
     if [ ! -s "$TMP/up" ]; then msg "Upgrade" "All packages are up to date.\n\nUse 'Update lists' to refresh the repositories."; return; fi
     set --
     while read -r n o v; do set -- "$@" "$n" "$o -> $v" on; done < "$TMP/up"
@@ -82,8 +131,9 @@ upgrades() {
     confirm_install $(echo "$sel" | tr '\n' ' ')
 }
 
-pick_package() {   # reads "name - description" lines from $TMP/list, shows a menu, opens the page
-    [ -s "$TMP/list" ] || { msg "$1" "Nothing found."; return; }
+pick_package() {   # TITLE ACTION: reads "name - description" lines from $TMP/list, shows a menu, runs ACTION on the pick
+    ptitle=$1; action=$2   # "set --" below overwrites $1 and $2
+    [ -s "$TMP/list" ] || { msg "$ptitle" "Nothing found."; return; }
     set --
     n=0
     while IFS= read -r line; do
@@ -91,37 +141,44 @@ pick_package() {   # reads "name - description" lines from $TMP/list, shows a me
         n=$((n + 1)); [ $n -ge 300 ] && break
     done < "$TMP/list"
     size
-    pick=$($DIALOG --stdout --backtitle "$BT" --title "$1" --no-items --menu "$n packages (at most 300 are shown). Enter opens a package." "$BH" "$BW" "$LH" "$@") || return
-    package_page "${pick%% *}"
+    pick=$($DIALOG --stdout --backtitle "$BT" --title "$ptitle" --no-items --menu "$n packages (at most 300 are shown)." "$BH" "$BW" "$LH" "$@") || return
+    "$action" "${pick%% *}"
 }
 
 search() {
     size
     q=$($DIALOG --stdout --backtitle "$BT" --title "Search" --inputbox "Words in the name or description:" 8 60) || return
     [ -n "$q" ] || return
+    set -f   # no globbing of the search words
     # shellcheck disable=SC2086
     "$APT_CACHE" search $q > "$TMP/list" 2>/dev/null
-    pick_package "Search: $q"
+    set +f
+    pick_package "Search: $q" install_page
 }
 
-installed() {
+# list_installed TITLE: ask for a name filter and fill $TMP/list with installed packages.
+list_installed() {
     size
-    q=$($DIALOG --stdout --backtitle "$BT" --title "Installed" --inputbox "Part of the name (empty = all):" 8 60) || return
-    "$DPKG_QUERY" -W -f '${Package} - ${Version} ${Status}\n' 2>/dev/null | awk -v q="$q" '$NF == "installed" && index($1, q) { print $1 " - " $3 }' > "$TMP/list"
-    pick_package "Installed"
+    q=$($DIALOG --stdout --backtitle "$BT" --title "$1" --inputbox "Part of the name (empty = all):" 8 60) || return 1
+    "$DPKG_QUERY" -W -f '${Package} - ${Version} ${Status}\n' 2>/dev/null | awk -v q="$q" '$NF == "installed" && (q == "" || index($1, q)) { print $1 " - " $3 }' > "$TMP/list"
 }
+
+installed() { list_installed "Installed" && pick_package "Installed" show_info; }
+
+remove() { list_installed "Remove" && pick_package "Remove" confirm_remove; }
 
 while :; do
     size
     c=$($DIALOG --stdout --backtitle "$BT" --title "Packages" --cancel-label "Quit" \
-        --menu "Maemo 5 package manager" 14 50 5 \
-        1 "Upgrade" 2 "Search and install" 3 "Installed packages" 4 "Update lists" 5 "Quit") || break
+        --menu "Maemo 5 package manager" 15 50 6 \
+        1 "Update lists" 2 "Upgrade" 3 "Search and install" 4 "Installed packages" 5 "Remove packages" 6 "Quit") || break
     case $c in
-        1) upgrades ;;
-        2) search ;;
-        3) installed ;;
-        4) run_logged "Updating lists" "$APT_GET" update ;;
-        5) break ;;
+        1) run_logged "Updating lists" "$APT_GET" update ;;
+        2) upgrades ;;
+        3) search ;;
+        4) installed ;;
+        5) remove ;;
+        6) break ;;
     esac
 done
 clear 2>/dev/null
